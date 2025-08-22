@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import math
 @dataclass
 class LMconfig:
-    max_context_length: int = 512
+    max_context_length: int = 32
     embedding_size: int = 768
     num_blocks: int = 12
     num_attention_heads: int = 12
@@ -137,16 +137,23 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            print(f'before: logits: {logits.shape}, targets: {targets.shape}')
             logits = logits.view(batch * seq_length, -1)
             targets = targets.view(batch * seq_length)
-            print(f'after: logits: {logits.shape}, targets: {targets.shape}')
             loss = F.cross_entropy(logits, targets)
         
         return logits, loss
     
-    def generate(self):
-        pass # todo
+    def generate(self, config, x):
+        for _ in range(config.max_context_length):
+            x_cond = x[:, -config.max_context_length:] if x.size(1) > config.max_context_length else x
+            logits, _ = self(x_cond)
+            probs = logits[:, -1, :]
+            probs = F.softmax(probs, dim = -1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            x = torch.cat((x, next_token), dim = 1)
+            print(next_token)
+        return x
+
 
 class myDataset(Dataset):
     def __init__(self, texts, config):
@@ -246,9 +253,39 @@ def eval(model, dataset, device):
     print(f'Eval loss: {eval_loss}')
     return eval_loss
 
-for epoch in range(2):
+
+prompt = [
+     "I am doing really well and"
+]
+import tiktoken
+encoded = []
+for p in prompt:
+    enc = tiktoken.get_encoding("gpt2").encode(p)
+    encoded.append(enc)
+
+max_len = max(len(e) for e in encoded)
+
+# 3. 用 eos token padding
+eos = tiktoken.get_encoding("gpt2").encode(
+            "<|endoftext|>", 
+            allowed_special={"<|endoftext|>"}
+        )[0]
+padded = [e + [eos] * (max_len - len(e)) for e in encoded]
+
+# 4. 转 tensor
+encoded = torch.tensor(padded, dtype=torch.long).to(device)
+output = model.generate(LMconfig, encoded)
+output = [tiktoken.get_encoding("gpt2").decode(s.tolist()) for s in output]
+print(f'Before training: {output}')
+# print(model.generate(LMconfig, prompt_set))
+
+for epoch in range(3):
     train_loss = train(model, train_loader, optimizer, scheduler, device)
     eval_loss = eval(model, valid_loader, device)
 
     print(f'Epoch {epoch}, train loss: {train_loss / len(train_loader): 4f}, eval loss: {eval_loss / len(valid_loader): 4f}')
 
+# print(model.generate(LMconfig, prompt_set))
+output = model.generate(LMconfig, encoded)
+output = [tiktoken.get_encoding("gpt2").decode(s.tolist()) for s in output]
+print(f'After training: {output}')
